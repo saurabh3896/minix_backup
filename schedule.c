@@ -10,7 +10,9 @@
 #include "sched.h"
 #include "schedproc.h"
 #include <assert.h>
+#include <limits.h>
 #include <minix/com.h>
+#include <time.h>
 #include <machine/archtypes.h>
 #include "kernel/proc.h" /* for queue constants */
 
@@ -18,9 +20,14 @@ static timer_t sched_timer;
 static unsigned balance_timeout;
 
 #define BALANCE_TIMEOUT	5 /* how often to balance queues in seconds */
+#define SYS_SETDL (SCHEDULING_BASE+6)
 
 static int schedule_process(struct schedproc * rmp, unsigned flags);
 static void balance_queues(struct timer *tp);
+
+/* NEW ADDITION for edf-scheduling */
+struct schedproc *edf_head = NULL;
+/* ************ */
 
 #define SCHEDULE_CHANGE_PRIO	0x1
 #define SCHEDULE_CHANGE_QUANTUM	0x2
@@ -99,7 +106,7 @@ int do_noquantum(message *m_ptr)
 	}
 
 	rmp = &schedproc[proc_nr_n];
-	if (rmp->priority < MIN_USER_Q) {
+	if (rmp->priority < MIN_USER_Q && rmp->deadline == LONG_MAX) {
 		rmp->priority += 1; /* lower priority */
 	}
 
@@ -133,6 +140,11 @@ int do_stop_scheduling(message *m_ptr)
 #endif
 	rmp->flags = 0; /*&= ~IN_USE;*/
 
+	/* printf statements */
+	//if(rmp->deadline != LONG_MAX)
+	//	printf("stopping with deadline : %ld", rmp->deadline);
+	/* ***************** */
+
 	return OK;
 }
 
@@ -143,11 +155,8 @@ int do_start_scheduling(message *m_ptr)
 {
 	register struct schedproc *rmp;
 	int rv, proc_nr_n, parent_nr_n;
-	/* setting deadline to -1, which is the default for all system processes, and this 
-	* change for user-level processes to some non-negative value */
-	rmp -> deadline = -1;
 	
-	/* we can handle three kinds of messages now, including the new SYS_SETDL kind here */
+	/* we can handle two kinds of messages here */
 	assert(m_ptr->m_type == SCHEDULING_START || 
 		m_ptr->m_type == SCHEDULING_INHERIT || m_ptr->m_type == SYS_SETDL);
 
@@ -162,6 +171,9 @@ int do_start_scheduling(message *m_ptr)
 	}
 	rmp = &schedproc[proc_nr_n];
 
+	/* add deadline here */
+	rmp->deadline = LONG_MAX;
+
 	/* Populate process slot */
 	rmp->endpoint     = m_ptr->SCHEDULING_ENDPOINT;
 	rmp->parent       = m_ptr->SCHEDULING_PARENT;
@@ -169,6 +181,7 @@ int do_start_scheduling(message *m_ptr)
 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
 		return EINVAL;
 	}
+
 	/* Inherit current priority and time slice from parent. Since there
 	 * is currently only one scheduler scheduling the whole system, this
 	 * value is local and we assert that the parent endpoint is valid */
@@ -196,6 +209,7 @@ int do_start_scheduling(message *m_ptr)
 		/* We have a special case here for system processes, for which
 		 * quanum and priority are set explicitly rather than inherited 
 		 * from the parent */
+		rmp->deadline 	= LONG_MAX;
 		rmp->priority   = rmp->max_priority;
 		rmp->time_slice = (unsigned) m_ptr->SCHEDULING_QUANTUM;
 		break;
@@ -208,15 +222,11 @@ int do_start_scheduling(message *m_ptr)
 				&parent_nr_n)) != OK)
 			return rv;
 
+		rmp->deadline = LONG_MAX;
 		rmp->priority = schedproc[parent_nr_n].priority;
 		rmp->time_slice = schedproc[parent_nr_n].time_slice;
 		break;
-	case SYS_SETDL:
-		/* We will set deadline here, this also shows that the process reached
-		* here is a user-level process and not a system-process */
-		printf("confirmation : %d\n", m_ptr->m1_i1);
-		break;
-
+		
 	default: 
 		/* not reachable */
 		assert(0);
@@ -255,6 +265,60 @@ int do_start_scheduling(message *m_ptr)
 	m_ptr->SCHEDULING_SCHEDULER = SCHED_PROC_NR;
 
 	return OK;
+}
+
+void insert_proc(struct schedproc *rmp){
+	struct schedproc **pp;
+	int found = 0;
+	for(pp = &edf_head; *pp; pp = &(*pp)->p_deadline){
+		if((*pp)->deadline < rmp->deadline)
+			continue;
+		rmp->p_deadline = *pp;
+		*pp = rmp;
+		found = 1;
+		break;
+	}
+	if(!found){
+		*pp = rmp;
+		rmp->p_deadline = NULL;
+	}
+}
+
+void remove_proc(struct schedproc *rmp){
+	struct schedproc **pp;
+	if(rmp == NULL) return;
+	for(pp = &edf_head; *pp; pp =  &(*pp)->p_deadline){
+		if(*pp == rmp){
+			*pp = rmp->p_deadline;
+			rmp->deadline = 0;
+			rmp->p_deadline = NULL;
+			break;
+		}
+	}
+}
+
+int do_set_deadline(message *m_ptr)
+{
+	int proc_nr_n, now, dl;
+	struct schedproc *rmp;
+	proc_nr_n = _ENDPOINT_P(m_ptr->m1_i2);
+	rmp = &schedproc[proc_nr_n];
+	rmp->p_deadline = NULL;
+	now = time(NULL);
+	dl = m_ptr->m1_i1;
+	if(dl == 0){
+		remove_proc(rmp);
+	}
+	else{
+		if(rmp->deadline != 0){
+			remove_proc(rmp);
+		}
+		rmp->deadline = dl;
+		printf("Set deadline for process to %ld (time now is %d)\n", rmp->deadline, now);
+		insert_proc(rmp);
+	}
+	int rv = schedule_process_local(rmp); 
+	return rv;
 }
 
 /*===========================================================================*
@@ -297,6 +361,41 @@ int do_nice(message *m_ptr)
 		rmp->max_priority = old_max_q;
 	}
 
+	return rv;
+}
+
+int _do_set_deadline(message *m_ptr)
+{
+	struct schedproc *rmp;
+	int rv;
+	int proc_nr_n;
+	unsigned old_q, old_max_q;
+	//m_ptr->m1_i2 is the endpoint passed from the message
+	//if (sched_isokendpt(m_ptr->m1_i2, &proc_nr_n) != OK) {
+		//warning message
+	//	return EBADEPT;
+	//}
+	proc_nr_n = _ENDPOINT_P(m_ptr->m1_i2);
+	rmp = &schedproc[proc_nr_n];
+	//setting the deadline here
+	rmp->deadline = m_ptr->m1_i1;
+	printf("deadline : %ld\n", rmp->deadline);
+	int add_factor = (m_ptr->m1_i1)/1000000;
+	rmp->priority = rmp->max_priority + add_factor;
+	if (rmp->priority < MIN_USER_Q){
+		rmp->priority = MIN_USER_Q;
+	}
+	old_q = rmp->priority;
+	old_max_q = rmp->max_priority;
+	rmp->max_priority = rmp->priority;
+	if ((rv = schedule_process_local(rmp)) != OK) {
+		/* Something went wrong when rescheduling the process, roll
+		 * back the changes to proc struct */
+		rmp->priority     = old_q;
+		rmp->max_priority = old_max_q;
+		rmp->deadline	  = LONG_MAX;
+	}
+	rmp->flags = IN_USE;
 	return rv;
 }
 
@@ -361,13 +460,30 @@ static void balance_queues(struct timer *tp)
 	int proc_nr;
 
 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
-		if (rmp->flags & IN_USE) {
-			if (rmp->priority > rmp->max_priority) {
-				rmp->priority -= 1; /* increase priority */
-				schedule_process_local(rmp);
+		if (rmp->deadline == LONG_MAX) {
+			if (rmp->flags & IN_USE) {
+				if (rmp->priority > rmp->max_priority) {
+					rmp->priority -= 1; /* increase priority */
+					schedule_process_local(rmp);
+				}
 			}
 		}
+		else {
+			if (rmp->flags & IN_USE) {
+				if (rmp->deadline <= 1666667){
+					printf("Process killed, missed its deadline.\n");
+					sys_kill(rmp->endpoint, SIGKILL);
+				}
+				else{
+					//decrement deadline
+					rmp->deadline -= 1666667;
+					if (rmp->priority > rmp->max_priority){
+						rmp->priority -= 1;
+						schedule_process_local(rmp);
+					}
+				}
+			}
+		}
+		set_timer(&sched_timer, balance_timeout, balance_queues, 0);
 	}
-
-	set_timer(&sched_timer, balance_timeout, balance_queues, 0);
 }

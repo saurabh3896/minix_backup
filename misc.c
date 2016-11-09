@@ -30,6 +30,8 @@
 #include "param.h"
 #include "kernel/proc.h"
 
+#define SYS_SETDL (SCHEDULING_BASE+6)
+
 struct utsname uts_val = {
   "Minix",		/* system name */
   "noname",		/* node/network name */
@@ -497,19 +499,7 @@ char *brk_addr;
 }
 
 int do_setdeadline(){
-	//printf("My nigga !\n");
-	printf("You gave me a deadline : %d\n", m_in.m1_i1);
-	//m_in.m1_i1 = deadline;
-	message m;
-	int p, deadline = m_in.m1_i1;
-	p = m_in.m1_i2;
-	//p = proc_from_pid(p);
-	pid_t p1 = (pid_t) p;
-	if(p1 == -1)
-		return EINVAL;
-	m.m_type = SYS_SETDL;
-	m.m1_i1 = deadline;
-	m.m1_i2 = mproc[p1].mp_endpoint;
-	//return sendrec(SYSTEM, &m_in);
+	m_in.m_type = SYS_SETDL;
+	m_in.m1_i2 = mp->mp_endpoint;
 	return _taskcall(SCHED_PROC_NR, SYS_SETDL, &m_in);
 }

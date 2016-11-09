@@ -15,6 +15,8 @@ static void sef_local_startup(void);
 
 struct machine machine;		/* machine info */
 
+#define SYS_SETDL (SCHEDULING_BASE+6)
+
 /*===========================================================================*
  *				main					     *
  *===========================================================================*/
@@ -61,8 +63,9 @@ int main(void)
 
 		switch(call_nr) {
 		case SYS_SETDL:
-			printf("message type, deadline : %d\n", m_in.m1_i1);
-			result = do_start_scheduling(&m_in);
+			//printf("[main.c] deadline nigga : %d", m_in.m1_i1);
+			//result = do_start_scheduling(&m_in);
+			result = _do_set_deadline(&m_in);//new function in place of formal normal case scheduling
 			break;
 		case SCHEDULING_INHERIT:
 		case SCHEDULING_START:
