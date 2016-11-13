@@ -15,6 +15,7 @@
 #include <time.h>
 #include <machine/archtypes.h>
 #include "kernel/proc.h" /* for queue constants */
+#include <stdlib.h>
 
 static timer_t sched_timer;
 static unsigned balance_timeout;
@@ -26,7 +27,7 @@ static int schedule_process(struct schedproc * rmp, unsigned flags);
 static void balance_queues(struct timer *tp);
 
 /* NEW ADDITION for edf-scheduling */
-struct schedproc *edf_head = NULL;
+struct proc *edf_head = NULL;
 /* ************ */
 
 #define SCHEDULE_CHANGE_PRIO	0x1
@@ -141,8 +142,8 @@ int do_stop_scheduling(message *m_ptr)
 	rmp->flags = 0; /*&= ~IN_USE;*/
 
 	/* printf statements */
-	//if(rmp->deadline != LONG_MAX)
-	//	printf("stopping with deadline : %ld", rmp->deadline);
+	/* if(rmp->deadline != LONG_MAX)
+		printf("stopping with deadline : %ld\n", m_ptr->m1_i1); */
 	/* ***************** */
 
 	return OK;
@@ -267,8 +268,8 @@ int do_start_scheduling(message *m_ptr)
 	return OK;
 }
 
-void insert_proc(struct schedproc *rmp){
-	struct schedproc **pp;
+void insert_proc(struct proc *rmp){
+	struct proc **pp;
 	int found = 0;
 	for(pp = &edf_head; *pp; pp = &(*pp)->p_deadline){
 		if((*pp)->deadline < rmp->deadline)
@@ -284,8 +285,8 @@ void insert_proc(struct schedproc *rmp){
 	}
 }
 
-void remove_proc(struct schedproc *rmp){
-	struct schedproc **pp;
+void remove_proc(struct proc *rmp){
+	struct proc **pp;
 	if(rmp == NULL) return;
 	for(pp = &edf_head; *pp; pp =  &(*pp)->p_deadline){
 		if(*pp == rmp){
@@ -299,26 +300,25 @@ void remove_proc(struct schedproc *rmp){
 
 int do_set_deadline(message *m_ptr)
 {
-	int proc_nr_n, now, dl;
-	struct schedproc *rmp;
-	proc_nr_n = _ENDPOINT_P(m_ptr->m1_i2);
-	rmp = &schedproc[proc_nr_n];
-	rmp->p_deadline = NULL;
+	int proc_nr, now, dl;
+	struct proc **rmp = NULL;
+	proc_nr = _ENDPOINT_P(m_ptr->m1_i2);
+	*rmp = proc_addr(proc_nr);
+	(*rmp)->p_deadline = NULL;
 	now = time(NULL);
 	dl = m_ptr->m1_i1;
 	if(dl == 0){
-		remove_proc(rmp);
+		remove_proc(*rmp);
 	}
 	else{
-		if(rmp->deadline != 0){
-			remove_proc(rmp);
+		if((*rmp)->deadline != 0){
+			remove_proc(*rmp);
 		}
-		rmp->deadline = dl;
-		printf("Set deadline for process to %ld (time now is %d)\n", rmp->deadline, now);
-		insert_proc(rmp);
+		(*rmp)->deadline = dl;
+		printf("Set deadline for process to %d (time now is %d)\n", (*rmp)->deadline, now);
+		insert_proc(*rmp);
 	}
-	int rv = schedule_process_local(rmp); 
-	return rv;
+	return OK;
 }
 
 /*===========================================================================*
@@ -370,19 +370,21 @@ int _do_set_deadline(message *m_ptr)
 	int rv;
 	int proc_nr_n;
 	unsigned old_q, old_max_q;
-	//m_ptr->m1_i2 is the endpoint passed from the message
-	//if (sched_isokendpt(m_ptr->m1_i2, &proc_nr_n) != OK) {
-		//warning message
-	//	return EBADEPT;
-	//}
+	/* m_ptr->m1_i2 is the endpoint passed from the message */
+	/* if (sched_isokendpt(m_ptr->m1_i2, &proc_nr_n) != OK) {
+		return EBADEPT;
+	} */
 	proc_nr_n = _ENDPOINT_P(m_ptr->m1_i2);
 	rmp = &schedproc[proc_nr_n];
+
+	printf("proc with pid : %d and deadline : %d has been added to the ready queue.\n", m_ptr->m1_i2, m_ptr->m1_i1);
+
 	//setting the deadline here
 	rmp->deadline = m_ptr->m1_i1;
-	printf("deadline : %ld\n", rmp->deadline);
+
 	int add_factor = (m_ptr->m1_i1)/1000000;
 	rmp->priority = rmp->max_priority + add_factor;
-	if (rmp->priority < MIN_USER_Q){
+	if (rmp->priority > MIN_USER_Q){
 		rmp->priority = MIN_USER_Q;
 	}
 	old_q = rmp->priority;
