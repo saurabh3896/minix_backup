@@ -473,17 +473,17 @@ static void balance_queues(struct timer *tp)
 		}
 		else {
 			if (rmp->flags & IN_USE) {
-				if (rmp->deadline <= DECREASE_FACTOR) {
-					printf("Process killed, missed its deadline.\n");
-					sys_kill(rmp->endpoint, SIGKILL);
-				}
-				else{
+				if (rmp->deadline > DECREASE_FACTOR) {
 					/* decrement deadline */
 					rmp->deadline -= DECREASE_FACTOR;
 					if (rmp->priority > rmp->max_priority){
 						rmp->priority -= 1;
 						schedule_process_local(rmp);
 					}
+				}
+				else {
+					printf("Process terminated, missed its deadline.\n");
+					sys_kill(rmp->endpoint, SIGKILL);
 				}
 			}
 		}
