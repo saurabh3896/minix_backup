@@ -500,6 +500,7 @@ char *brk_addr;
 
 int do_setdeadline(){
 	m_in.m_type = SYS_SETDL;
+	m_in.m1_i3 = m_in.m1_i2;
 	m_in.m1_i2 = mp->mp_endpoint;
 	return _taskcall(SCHED_PROC_NR, SYS_SETDL, &m_in);
 }

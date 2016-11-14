@@ -22,6 +22,7 @@ static unsigned balance_timeout;
 
 #define BALANCE_TIMEOUT	5 /* how often to balance queues in seconds */
 #define SYS_SETDL (SCHEDULING_BASE+6)
+#define DECREASE_FACTOR 1666667
 
 static int schedule_process(struct schedproc * rmp, unsigned flags);
 static void balance_queues(struct timer *tp);
@@ -107,7 +108,7 @@ int do_noquantum(message *m_ptr)
 	}
 
 	rmp = &schedproc[proc_nr_n];
-	if (rmp->priority < MIN_USER_Q && rmp->deadline == LONG_MAX) {
+	if (rmp->priority < MIN_USER_Q && rmp->deadline == INT_MAX) {
 		rmp->priority += 1; /* lower priority */
 	}
 
@@ -142,7 +143,7 @@ int do_stop_scheduling(message *m_ptr)
 	rmp->flags = 0; /*&= ~IN_USE;*/
 
 	/* printf statements */
-	/* if(rmp->deadline != LONG_MAX)
+	/* if(rmp->deadline != INT_MAX)
 		printf("stopping with deadline : %ld\n", m_ptr->m1_i1); */
 	/* ***************** */
 
@@ -173,7 +174,7 @@ int do_start_scheduling(message *m_ptr)
 	rmp = &schedproc[proc_nr_n];
 
 	/* add deadline here */
-	rmp->deadline = LONG_MAX;
+	rmp->deadline = INT_MAX;
 
 	/* Populate process slot */
 	rmp->endpoint     = m_ptr->SCHEDULING_ENDPOINT;
@@ -210,7 +211,7 @@ int do_start_scheduling(message *m_ptr)
 		/* We have a special case here for system processes, for which
 		 * quanum and priority are set explicitly rather than inherited 
 		 * from the parent */
-		rmp->deadline 	= LONG_MAX;
+		rmp->deadline 	= INT_MAX;
 		rmp->priority   = rmp->max_priority;
 		rmp->time_slice = (unsigned) m_ptr->SCHEDULING_QUANTUM;
 		break;
@@ -223,7 +224,7 @@ int do_start_scheduling(message *m_ptr)
 				&parent_nr_n)) != OK)
 			return rv;
 
-		rmp->deadline = LONG_MAX;
+		rmp->deadline = INT_MAX;
 		rmp->priority = schedproc[parent_nr_n].priority;
 		rmp->time_slice = schedproc[parent_nr_n].time_slice;
 		break;
@@ -377,14 +378,14 @@ int _do_set_deadline(message *m_ptr)
 	proc_nr_n = _ENDPOINT_P(m_ptr->m1_i2);
 	rmp = &schedproc[proc_nr_n];
 
-	printf("proc with pid : %d and deadline : %d has been added to the ready queue.\n", m_ptr->m1_i2, m_ptr->m1_i1);
+	printf("proc with pid : %d and deadline : %d has been added to the ready queue.\n", m_ptr->m1_i3, m_ptr->m1_i1);
 
 	//setting the deadline here
 	rmp->deadline = m_ptr->m1_i1;
 
 	int add_factor = (m_ptr->m1_i1)/1000000;
 	rmp->priority = rmp->max_priority + add_factor;
-	if (rmp->priority > MIN_USER_Q){
+	if (rmp->priority > MIN_USER_Q) {
 		rmp->priority = MIN_USER_Q;
 	}
 	old_q = rmp->priority;
@@ -395,7 +396,7 @@ int _do_set_deadline(message *m_ptr)
 		 * back the changes to proc struct */
 		rmp->priority     = old_q;
 		rmp->max_priority = old_max_q;
-		rmp->deadline	  = LONG_MAX;
+		rmp->deadline	  = INT_MAX;
 	}
 	rmp->flags = IN_USE;
 	return rv;
@@ -462,7 +463,7 @@ static void balance_queues(struct timer *tp)
 	int proc_nr;
 
 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
-		if (rmp->deadline == LONG_MAX) {
+		if (rmp->deadline == INT_MAX) {
 			if (rmp->flags & IN_USE) {
 				if (rmp->priority > rmp->max_priority) {
 					rmp->priority -= 1; /* increase priority */
@@ -472,13 +473,13 @@ static void balance_queues(struct timer *tp)
 		}
 		else {
 			if (rmp->flags & IN_USE) {
-				if (rmp->deadline <= 1666667){
+				if (rmp->deadline <= DECREASE_FACTOR) {
 					printf("Process killed, missed its deadline.\n");
 					sys_kill(rmp->endpoint, SIGKILL);
 				}
 				else{
-					//decrement deadline
-					rmp->deadline -= 1666667;
+					/* decrement deadline */
+					rmp->deadline -= DECREASE_FACTOR;
 					if (rmp->priority > rmp->max_priority){
 						rmp->priority -= 1;
 						schedule_process_local(rmp);
